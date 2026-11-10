@@ -55,11 +55,46 @@ def dodaj_kolumny_pomocnicze(bronze: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def main() -> None:
+def waliduj(df: pd.DataFrame) -> pd.DataFrame:
+    """Zwraca tabelę błędów: jeden wiersz na rekord, jedna kolumna na regułę (True = reguła złamana)."""
+    close = df["close_num"]
+    volume = df["volume_num"]
+    return pd.DataFrame(
+        {
+            # Reguła 2
+            "brak_lub_zla_data": df["date_parsed"].isna(),
+            "pusty_ticker": df["ticker_norm"] == "",
+            # Reguła 3: skończona liczba > 0 (NaN i inf odpadają na np.isfinite)
+            "zla_cena_close": ~(np.isfinite(close) & (close > 0)),
+            # Reguła 4: skończona liczba całkowita >= 0; 0 jest poprawne, brak wartości nie
+            "zly_wolumen": ~(np.isfinite(volume) & (volume >= 0) & (volume % 1 == 0)),
+        },
+        index=df.index,
+    )
+
+
+def main() -> int:
     bronze = wczytaj_bronze(PLIK_BRONZE)
+    kolumny_zrodlowe = list(bronze.columns)
     df = dodaj_kolumny_pomocnicze(bronze)
-    print(df.to_string())
+
+    # --- Krok 1 (reguła 5): najpierw wyodrębnij błędne rekordy -------------------------
+    bledy_regul = waliduj(df)
+    poprawny = ~bledy_regul.any(axis=1)
+    powod = bledy_regul.apply(lambda wiersz: ", ".join(wiersz.index[wiersz]), axis=1)
+
+    odrzuty = bronze.loc[~poprawny, kolumny_zrodlowe]  # oryginalne wiersze (reguła 7)
+    poprawne = df.loc[poprawny]
+
+    odrzuty.to_csv(PLIK_ODRZUTY, sep=SEP, index=False, encoding=KODOWANIE)
+
+    print(f"Bronze:   {len(bronze)}")
+    print(f"Poprawne: {len(poprawne)}")
+    print(f"Odrzuty:  {len(odrzuty)}")
+    for idx in odrzuty.index:
+        print(f"  {bronze.at[idx, 'record_id']}: {powod.at[idx]}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
