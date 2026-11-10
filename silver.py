@@ -86,13 +86,44 @@ def main() -> int:
     odrzuty = bronze.loc[~poprawny, kolumny_zrodlowe]  # oryginalne wiersze (reguła 7)
     poprawne = df.loc[poprawny]
 
-    odrzuty.to_csv(PLIK_ODRZUTY, sep=SEP, index=False, encoding=KODOWANIE)
+    # --- Krok 2 (reguła 6): deduplikacja WYŁĄCZNIE wśród poprawnych ---------------------
+    # Najnowsza wersja pierwsza; czasy są w jednym formacie ISO UTC, więc sortowanie tekstowe
+    # jest poprawne. Ponieważ błędne rekordy już odpadły, nowszy błędny rekord nie może
+    # wyprzeć starszego poprawnego (reguła 7).
+    poprawne_od_najnowszych = poprawne.sort_values("ingestion_timestamp", ascending=False, kind="stable")
+    czy_duplikat = poprawne_od_najnowszych.duplicated(subset=KLUCZ, keep="first")
 
-    print(f"Bronze:   {len(bronze)}")
-    print(f"Poprawne: {len(poprawne)}")
-    print(f"Odrzuty:  {len(odrzuty)}")
-    for idx in odrzuty.index:
-        print(f"  {bronze.at[idx, 'record_id']}: {powod.at[idx]}")
+    wygrane = poprawne_od_najnowszych.loc[~czy_duplikat]
+    duplikaty = bronze.loc[poprawne_od_najnowszych.index[czy_duplikat], kolumny_zrodlowe].sort_index()
+
+    # --- Krok 3: Silver z wartościami znormalizowanymi i typowanymi ----------------------
+    silver = (
+        pd.DataFrame(
+            {
+                "record_id": wygrane["record_id"],
+                "date": wygrane["date_norm"],
+                "ticker": wygrane["ticker_norm"],
+                "close": wygrane["close_num"],
+                "volume": wygrane["volume_num"].astype("int64"),
+                "batch_id": wygrane["batch_id"],
+                "ingestion_timestamp": wygrane["ingestion_timestamp"],
+            }
+        )
+        .sort_values(["date", "ticker"])
+        .reset_index(drop=True)
+    )
+
+    # --- Zapis ---------------------------------------------------------------------------
+    silver.to_csv(PLIK_SILVER, sep=SEP, index=False, encoding=KODOWANIE)
+    odrzuty.to_csv(PLIK_ODRZUTY, sep=SEP, index=False, encoding=KODOWANIE)
+    duplikaty.to_csv(PLIK_DUPLIKATY, sep=SEP, index=False, encoding=KODOWANIE)
+
+    # --- Raport --------------------------------------------------------------------------
+    print("Liczności:")
+    print(f"  Bronze:    {len(bronze)}")
+    print(f"  Silver:    {len(silver)}")
+    print(f"  Odrzuty:   {len(odrzuty)}")
+    print(f"  Duplikaty: {len(duplikaty)}")
     return 0
 
 
