@@ -73,6 +73,12 @@ def waliduj(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def sprawdz(warunek: bool, opis: str, bledy: list) -> None:
+    print(f"  [{'OK' if warunek else 'BŁĄD'}] {opis}")
+    if not warunek:
+        bledy.append(opis)
+
+
 def main() -> int:
     bronze = wczytaj_bronze(PLIK_BRONZE)
     kolumny_zrodlowe = list(bronze.columns)
@@ -124,6 +130,77 @@ def main() -> int:
     print(f"  Silver:    {len(silver)}")
     print(f"  Odrzuty:   {len(odrzuty)}")
     print(f"  Duplikaty: {len(duplikaty)}")
+
+    print("\nOdrzuty (powód):")
+    for idx in odrzuty.index:
+        print(f"  {bronze.at[idx, 'record_id']}: {powod.at[idx]}")
+
+    print("\nDuplikaty (który rekord je zastąpił):")
+    zwyciezca = wygrane.set_index(KLUCZ)
+    for idx in duplikaty.index:
+        klucz = (df.at[idx, "date_norm"], df.at[idx, "ticker_norm"])
+        print(
+            f"  {bronze.at[idx, 'record_id']} ({bronze.at[idx, 'ingestion_timestamp']}) "
+            f"-> zastąpiony przez {zwyciezca.at[klucz, 'record_id']} "
+            f"({zwyciezca.at[klucz, 'ingestion_timestamp']}) dla klucza {klucz}"
+        )
+
+    print("\nSilver:")
+    print(silver.to_string(index=False))
+
+    # --- Kontrole ------------------------------------------------------------------------
+    print("\nKontrole:")
+    bledy: list = []
+    id_bronze = set(bronze["record_id"])
+    id_silver = set(silver["record_id"])
+    id_odrzuty = set(odrzuty["record_id"])
+    id_duplikaty = set(duplikaty["record_id"])
+
+    sprawdz(bronze["record_id"].is_unique, "record_id w Bronze jest unikalny", bledy)
+    sprawdz(
+        len(bronze) == len(silver) + len(odrzuty) + len(duplikaty),
+        f"Bronze = Silver + odrzuty + duplikaty ({len(bronze)} = {len(silver)} + {len(odrzuty)} + {len(duplikaty)})",
+        bledy,
+    )
+    sprawdz(
+        not (id_silver & id_odrzuty or id_silver & id_duplikaty or id_odrzuty & id_duplikaty),
+        "zbiory są rozłączne (żaden record_id nie trafił do dwóch zbiorów)",
+        bledy,
+    )
+    sprawdz(id_silver | id_odrzuty | id_duplikaty == id_bronze, "każdy rekord Bronze trafił do jakiegoś zbioru", bledy)
+    sprawdz(not silver.duplicated(subset=["date", "ticker"]).any(), "w Silver nie powtarza się para (date, ticker)", bledy)
+    sprawdz(
+        bool((silver["ticker"] == silver["ticker"].str.strip().str.upper()).all()),
+        "tickery w Silver są znormalizowane",
+        bledy,
+    )
+    sprawdz(
+        bool((silver["close"] > 0).all() and (silver["volume"] >= 0).all()),
+        "Silver spełnia reguły close > 0 i volume >= 0",
+        bledy,
+    )
+    # Każdy duplikat musi być starszy od wersji, która została w Silver.
+    sprawdz(
+        all(
+            bronze.at[idx, "ingestion_timestamp"]
+            < zwyciezca.at[(df.at[idx, "date_norm"], df.at[idx, "ticker_norm"]), "ingestion_timestamp"]
+            for idx in duplikaty.index
+        ),
+        "każdy duplikat jest starszy niż rekord, który go zastąpił w Silver",
+        bledy,
+    )
+    # Odrzuty zapisane bajt w bajt tak jak w źródle (np. ' aapl ' ze spacjami, puste pola).
+    sprawdz(
+        wczytaj_bronze(PLIK_ODRZUTY).equals(odrzuty.reset_index(drop=True))
+        and wczytaj_bronze(PLIK_DUPLIKATY).equals(duplikaty.reset_index(drop=True)),
+        "odrzuty i duplikaty zapisano w oryginalnej postaci",
+        bledy,
+    )
+
+    if bledy:
+        print(f"\nNiepowodzenie: {len(bledy)} kontroli nie przeszło.")
+        return 1
+    print("\nWszystkie kontrole przeszły.")
     return 0
 
 
